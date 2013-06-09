@@ -40,11 +40,11 @@ import org.jsoup.select.Elements;
 import org.w3c.dom.NodeList;
 import org.xml.sax.SAXException;
 
+import com.google.common.base.Joiner;
+import com.google.common.collect.HashMultimap;
+import com.google.common.collect.Multimap;
 import com.google.common.util.concurrent.RateLimiter;
 
-// TODO(bpitman): handle URLs with spaces correctly (urlencode in canonicalize?)
-// TODO(bpitman): track where links come from to provide useful info on a 404
-// TODO(bpitman): parallelize content parsing (one downloader thread, n parser threads? each feeding into the other's queue)
 public class TumblrWatcher implements Runnable {
 
   /**
@@ -54,9 +54,9 @@ public class TumblrWatcher implements Runnable {
    * is not a general-purpose robots.txt parser.
    */
   private static class RobotsInfo {
-    
+
     private final List<String> disallowedPrefixes;
-    
+
     private final List<String> sitemapUrls;
 
     public RobotsInfo(List<String> sitemapUrls, List<String> disallowedPrefixes) {
@@ -174,10 +174,10 @@ public class TumblrWatcher implements Runnable {
     }
   }
 
-  private void downloadPages(Set<String> knownPages, RobotsInfo robotsInfo) {
-    logMessage(Level.INFO, "downloading updated pages.");
+  private void downloadPages(Multimap<String, String> knownPages, RobotsInfo robotsInfo) {
+    logMessage(Level.INFO, "downloading pages.");
 
-    Queue<String> workQueue = new ArrayDeque<String>(knownPages);
+    Queue<String> workQueue = new ArrayDeque<String>(knownPages.keySet());
 
     String pageUrl;
     while ((pageUrl = workQueue.poll()) != null) {
@@ -194,7 +194,10 @@ public class TumblrWatcher implements Runnable {
           connection = getContentStream(pageUrl);
           contentStream = connection.getInputStream();
         } catch (IOException ex) {
-          logMessage(Level.WARNING, "problem retrieving content.", ex);
+          logMessage(
+              Level.WARNING,
+              String.format("problem retrieving content. (linked from %s)",
+                  Joiner.on(", ").join(knownPages.get(pageUrl))), ex);
           continue;
         }
 
@@ -232,7 +235,7 @@ public class TumblrWatcher implements Runnable {
             logMessage(Level.WARNING, "error while parsing page for links.", exception);
             continue;
           }
-          
+
           try {
             pageAuthority = new URL(pageUrl).getAuthority();
           } catch (MalformedURLException exception) {
@@ -248,12 +251,17 @@ public class TumblrWatcher implements Runnable {
               logMessage(Level.WARNING, "error getting authority for page", exception);
               continue;
             }
-            
-            if (pageAuthority.equals(linkAuthority) && !knownPages.contains(linkUrl)) {
+
+            if (!pageAuthority.equals(linkAuthority)) {
+              continue;
+            }
+
+            if (!knownPages.containsKey(linkUrl)) {
               logMessage(Level.INFO, String.format("queueing %s for download.", linkUrl));
-              knownPages.add(linkUrl);
               workQueue.offer(linkUrl);
             }
+
+            knownPages.put(linkUrl, pageUrl);
           }
         }
       } finally {
@@ -338,8 +346,8 @@ public class TumblrWatcher implements Runnable {
     return new RobotsInfo(sitemapUrls, disallowedPrefixes);
   }
 
-  private Set<String> readSitemaps(RobotsInfo robotsInfo) {
-    Set<String> pagesInSitemap = new HashSet<String>();
+  private Multimap<String, String> readSitemaps(RobotsInfo robotsInfo) {
+    Multimap<String, String> pagesInSitemap = HashMultimap.create();
 
     logMessage(Level.INFO, "downloading site maps.");
 
@@ -378,7 +386,7 @@ public class TumblrWatcher implements Runnable {
         for (int i = 0; i < locNodes.getLength(); i++) {
           String locString = locNodes.item(i).getTextContent();
 
-          pagesInSitemap.add(canonicalize(locString));
+          pagesInSitemap.put(canonicalize(locString), sitemapUrl);
         }
       } finally {
         try {
@@ -417,7 +425,7 @@ public class TumblrWatcher implements Runnable {
       }
 
       logMessage(Level.INFO, "starting update sequence.");
-      Set<String> pagesInSitemap = readSitemaps(robotsInfo);
+      Multimap<String, String> pagesInSitemap = readSitemaps(robotsInfo);
       downloadPages(pagesInSitemap, robotsInfo);
       logMessage(Level.INFO, "update sequence complete.");
     } catch (Exception ex) {
