@@ -156,10 +156,12 @@ public class TumblrWatcher implements Runnable {
 
   private String canonicalize(String urlString) {
     try {
-      URL url = new URL(urlString);
-      String path = url.getPath();
+      // Convert %20 into dashes, as tumblr treats these as the same.
+      urlString = urlString.replace("%20", "-");
 
       // Remove descriptive text and other junk from post URLs.
+      URL url = new URL(urlString);
+      String path = url.getPath();
       Matcher postMatcher = POST_PATTERN.matcher(path);
       if (postMatcher.lookingAt()) {
         String postId = postMatcher.group(1);
